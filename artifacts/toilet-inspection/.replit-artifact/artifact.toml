@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "화장실 위생점검표"
+version = "1.0.0"
+id = "artifacts/toilet-inspection"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+localPort = 19771
+name = "web"
+paths = ["/"]
+
+[services.development]
+run = "pnpm --filter @workspace/toilet-inspection run dev"
+
+[services.env]
+PORT = "19771"
+BASE_PATH = "/"
+
+[services.production]
+build = ["pnpm", "--filter", "@workspace/toilet-inspection", "run", "build"]
+publicDir = "artifacts/toilet-inspection/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
