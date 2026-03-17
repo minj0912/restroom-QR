@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type CSSProperties } from "react";
 import type { Restroom } from "./types/restroom";
 import type { InspectionRecord, InspectionSlot } from "./types/inspection";
 import type { InspectionTemplate, TemplateItem } from "./types/template";
@@ -35,10 +35,22 @@ function sanitizeId(raw: string): string {
     .replace(/[^a-z0-9_-]/g, "");
 }
 
+function createEmptyTemplate(templateId: string): InspectionTemplate {
+  return {
+    id: templateId,
+    name: "기본 점검표",
+    slots: [
+      { id: "morning", label: "오전 점검", order: 1 },
+      { id: "afternoon", label: "오후 점검", order: 2 },
+    ],
+    items: [],
+  };
+}
+
 const INSPECTOR_CODE = "6481";
 const ADMIN_CODE = "6167";
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties | ((...args: any[]) => CSSProperties)> = {
   body: {
     margin: 0,
     fontFamily: "'Pretendard', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
@@ -54,7 +66,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "space-between",
     height: 60,
-    position: "sticky" as const,
+    position: "sticky",
     top: 0,
     zIndex: 100,
     boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
@@ -102,7 +114,7 @@ const styles: Record<string, React.CSSProperties> = {
       fontWeight: 600,
       cursor: "pointer",
       transition: "opacity 0.15s",
-    } as React.CSSProperties;
+    } as CSSProperties;
   },
   btnSm: (variant: "primary" | "secondary" | "danger" | "ghost" | "success") => {
     const map = {
@@ -125,7 +137,7 @@ const styles: Record<string, React.CSSProperties> = {
       fontSize: 12,
       fontWeight: 600,
       cursor: "pointer",
-    } as React.CSSProperties;
+    } as CSSProperties;
   },
   card: {
     background: "#fff",
@@ -145,13 +157,13 @@ const styles: Record<string, React.CSSProperties> = {
     margin: "0 auto",
     padding: "24px 16px",
     display: "flex",
-    flexDirection: "column" as const,
+    flexDirection: "column",
     gap: 20,
   },
   filterRow: {
     display: "flex",
     gap: 12,
-    flexWrap: "wrap" as const,
+    flexWrap: "wrap",
     alignItems: "center",
   },
   input: {
@@ -245,17 +257,17 @@ const styles: Record<string, React.CSSProperties> = {
   }),
   table: {
     width: "100%",
-    borderCollapse: "collapse" as const,
+    borderCollapse: "collapse",
     fontSize: 14,
   },
   th: {
     padding: "8px 12px",
-    textAlign: "left" as const,
+    textAlign: "left",
     fontWeight: 600,
     color: "#64748b",
     borderBottom: "1px solid #e2e8f0",
     fontSize: 12,
-    textTransform: "uppercase" as const,
+    textTransform: "uppercase",
     letterSpacing: "0.05em",
   },
   td: {
@@ -293,9 +305,7 @@ const styles: Record<string, React.CSSProperties> = {
 export default function App() {
   const [mode, setMode] = useState<Mode>("viewer");
   const [codeInput, setCodeInput] = useState("");
-  const [showCodeModal, setShowCodeModal] = useState<
-    "inspector" | "admin" | null
-  >(null);
+  const [showCodeModal, setShowCodeModal] = useState<"inspector" | "admin" | null>(null);
   const [codeError, setCodeError] = useState("");
 
   const [selectedDate, setSelectedDate] = useState(getTodaySeoul());
@@ -321,7 +331,9 @@ export default function App() {
     sortOrder: 0,
   });
   const [editingNewRestroom, setEditingNewRestroom] = useState(false);
-  const [templateDraft, setTemplateDraft] = useState<InspectionTemplate | null>(null);
+
+  const [adminTemplateDraft, setAdminTemplateDraft] = useState<InspectionTemplate | null>(null);
+  const [adminTemplateLoading, setAdminTemplateLoading] = useState(false);
 
   const showSuccess = (msg: string) => {
     setSuccessMsg(msg);
@@ -342,28 +354,32 @@ export default function App() {
 
   useEffect(() => {
     loadRestrooms();
-  }, []);
+  }, [loadRestrooms]);
 
   useEffect(() => {
     if (!selectedRestroomId) return;
     const restroom = restrooms.find((r) => r.id === selectedRestroomId);
     if (!restroom) return;
+
     setLoading(true);
     setError("");
     setRecord(null);
     setTemplate(null);
+
     Promise.all([
       fetchTemplate(restroom.templateId),
       fetchInspectionRecord(selectedDate, selectedRestroomId),
     ])
       .then(([tmpl, rec]) => {
-        setTemplate(tmpl);
+        const safeTemplate = tmpl ?? createEmptyTemplate(restroom.templateId);
+        setTemplate(safeTemplate);
         setRecord(rec);
-        if (tmpl && rec) {
+
+        if (rec) {
           setDraftSlots(JSON.parse(JSON.stringify(rec.slots)));
-        } else if (tmpl) {
+        } else {
           const empty: Record<string, InspectionSlot> = {};
-          tmpl.slots.forEach((s) => {
+          safeTemplate.slots.forEach((s) => {
             empty[s.id] = {
               status: "PENDING",
               inspectorName: "",
@@ -380,16 +396,46 @@ export default function App() {
   }, [selectedDate, selectedRestroomId, restrooms]);
 
   useEffect(() => {
-    if (mode === "admin") {
-      fetchAllRestrooms().then(setAdminAllRestrooms).catch(() => {});
-    }
-  }, [mode]);
+    if (mode !== "admin") return;
+
+    fetchAllRestrooms()
+      .then((list) => {
+        setAdminAllRestrooms(list);
+
+        if (!editingNewRestroom && !restroomForm.id && list.length > 0) {
+          setRestroomForm({ ...list[0] });
+        }
+      })
+      .catch(() => {});
+  }, [mode, editingNewRestroom, restroomForm.id]);
 
   useEffect(() => {
-    if (template) {
-      setTemplateDraft(JSON.parse(JSON.stringify(template)));
+    if (mode !== "admin") return;
+    if (!restroomForm.templateId) {
+      setAdminTemplateDraft(null);
+      return;
     }
-  }, [template]);
+
+    let cancelled = false;
+    setAdminTemplateLoading(true);
+
+    fetchTemplate(restroomForm.templateId)
+      .then((tmpl) => {
+        if (cancelled) return;
+        setAdminTemplateDraft(tmpl ?? createEmptyTemplate(restroomForm.templateId));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAdminTemplateDraft(createEmptyTemplate(restroomForm.templateId));
+      })
+      .finally(() => {
+        if (!cancelled) setAdminTemplateLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, restroomForm.templateId]);
 
   const handleModeSwitch = (target: "inspector" | "admin") => {
     setShowCodeModal(target);
@@ -399,8 +445,8 @@ export default function App() {
 
   const confirmCode = () => {
     if (!showCodeModal) return;
-    const correct =
-      showCodeModal === "inspector" ? INSPECTOR_CODE : ADMIN_CODE;
+    const correct = showCodeModal === "inspector" ? INSPECTOR_CODE : ADMIN_CODE;
+
     if (codeInput === correct) {
       setMode(showCodeModal);
       setShowCodeModal(null);
@@ -413,6 +459,7 @@ export default function App() {
 
   const handleSaveSlot = async (slotId: string) => {
     if (!template || !selectedRestroomId) return;
+
     const slot = draftSlots[slotId];
     if (!slot) return;
 
@@ -420,6 +467,7 @@ export default function App() {
       alert("점검자명을 입력해주세요.");
       return;
     }
+
     const enabledItems = template.items.filter((i) => i.enabled);
     for (const item of enabledItems) {
       if (!slot.answers[item.id]) {
@@ -429,6 +477,7 @@ export default function App() {
     }
 
     const restroom = restrooms.find((r) => r.id === selectedRestroomId);
+
     const newSlots = {
       ...draftSlots,
       [slotId]: {
@@ -446,21 +495,34 @@ export default function App() {
         templateId: restroom?.templateId ?? "default_template",
         slots: newSlots,
       });
+
       setDraftSlots(newSlots);
       const updated = await fetchInspectionRecord(selectedDate, selectedRestroomId);
       setRecord(updated);
-      showSuccess(`${template.slots.find((s) => s.id === slotId)?.label} 점검이 저장되었습니다.`);
+
+      showSuccess(
+        `${template.slots.find((s) => s.id === slotId)?.label ?? "선택한 시간"} 점검이 저장되었습니다.`
+      );
     } catch (e) {
       setError("저장 중 오류가 발생했습니다.");
     }
   };
 
   const handleSaveTemplate = async () => {
-    if (!templateDraft) return;
+    if (!adminTemplateDraft) return;
+
+    if (!adminTemplateDraft.id.trim()) {
+      alert("템플릿 ID가 비어 있습니다.");
+      return;
+    }
+
     try {
-      await saveTemplate(templateDraft);
-      setTemplate(templateDraft);
-      showSuccess("점검표 템플릿이 저장되었습니다.");
+      await saveTemplate(adminTemplateDraft);
+      showSuccess("선택한 화장실의 점검 항목이 저장되었습니다.");
+
+      if (selectedRestroom?.templateId === adminTemplateDraft.id) {
+        setTemplate(JSON.parse(JSON.stringify(adminTemplateDraft)));
+      }
     } catch (e) {
       setError("템플릿 저장 중 오류가 발생했습니다.");
     }
@@ -468,17 +530,34 @@ export default function App() {
 
   const handleSaveRestroom = async () => {
     const id = editingNewRestroom ? sanitizeId(restroomForm.id) : restroomForm.id;
+
     if (!id) {
       alert("화장실 ID를 입력해주세요.");
       return;
     }
+
     try {
       await saveRestroom({ ...restroomForm, id });
+
+      if (adminTemplateDraft) {
+        await saveTemplate({
+          ...adminTemplateDraft,
+          id: restroomForm.templateId,
+        });
+      }
+
       showSuccess("화장실 정보가 저장되었습니다.");
+
       const updated = await fetchAllRestrooms();
       setAdminAllRestrooms(updated);
       await loadRestrooms();
+
       setEditingNewRestroom(false);
+      setRestroomForm((prev) => ({ ...prev, id }));
+
+      if (!selectedRestroomId) {
+        setSelectedRestroomId(id);
+      }
     } catch (e) {
       setError("화장실 저장 중 오류가 발생했습니다.");
     }
@@ -486,12 +565,15 @@ export default function App() {
 
   const handleDeleteRestroom = async () => {
     if (!confirm(`'${restroomForm.name}' 화장실을 삭제하시겠습니까?`)) return;
+
     try {
       await deleteRestroom(restroomForm.id);
       showSuccess("화장실이 삭제되었습니다.");
+
       const updated = await fetchAllRestrooms();
       setAdminAllRestrooms(updated);
       await loadRestrooms();
+
       setRestroomForm({
         id: "",
         name: "",
@@ -501,6 +583,7 @@ export default function App() {
         templateId: "default_template",
         sortOrder: 0,
       });
+      setAdminTemplateDraft(null);
     } catch (e) {
       setError("화장실 삭제 중 오류가 발생했습니다.");
     }
@@ -508,6 +591,7 @@ export default function App() {
 
   const modeBadgeColor =
     mode === "viewer" ? "#94a3b8" : mode === "inspector" ? "#3b82f6" : "#a855f7";
+
   const modeLabel =
     mode === "viewer" ? "일반모드" : mode === "inspector" ? "점검자모드" : "관리자모드";
 
@@ -517,22 +601,23 @@ export default function App() {
   const selectedRestroom = restrooms.find((r) => r.id === selectedRestroomId);
 
   return (
-    <div style={styles.body}>
-      {/* ── Header ── */}
-      <header style={styles.header}>
-        <h1 style={styles.headerTitle}>🚽 화장실 위생점검표</h1>
-        <div style={styles.headerRight}>
-          <span style={styles.badge(modeBadgeColor)}>{modeLabel}</span>
+    <div style={styles.body as CSSProperties}>
+      <header style={styles.header as CSSProperties}>
+        <h1 style={styles.headerTitle as CSSProperties}>🚽 화장실 위생점검표</h1>
+        <div style={styles.headerRight as CSSProperties}>
+          <span style={(styles.badge as (color: string) => CSSProperties)(modeBadgeColor)}>
+            {modeLabel}
+          </span>
           {mode === "viewer" ? (
             <>
               <button
-                style={styles.btn("secondary")}
+                style={(styles.btn as any)("secondary")}
                 onClick={() => handleModeSwitch("inspector")}
               >
                 점검자모드
               </button>
               <button
-                style={styles.btn("ghost")}
+                style={(styles.btn as any)("ghost")}
                 onClick={() => handleModeSwitch("admin")}
               >
                 관리자모드
@@ -540,7 +625,7 @@ export default function App() {
             </>
           ) : (
             <button
-              style={styles.btn("secondary")}
+              style={(styles.btn as any)("secondary")}
               onClick={() => {
                 setMode("viewer");
                 setEditingNewRestroom(false);
@@ -552,7 +637,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Code Modal ── */}
       {showCodeModal && (
         <div
           style={{
@@ -586,24 +670,22 @@ export default function App() {
               onChange={(e) => setCodeInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && confirmCode()}
               placeholder="코드 입력"
-              style={{ ...styles.input, width: "100%", boxSizing: "border-box" }}
+              style={{ ...(styles.input as CSSProperties), width: "100%", boxSizing: "border-box" }}
               autoFocus
             />
             {codeError && (
-              <p style={{ color: "#ef4444", fontSize: 13, marginTop: 8 }}>
-                {codeError}
-              </p>
+              <p style={{ color: "#ef4444", fontSize: 13, marginTop: 8 }}>{codeError}</p>
             )}
             <div
               style={{ display: "flex", gap: 8, marginTop: 20, justifyContent: "flex-end" }}
             >
               <button
-                style={styles.btn("secondary")}
+                style={(styles.btn as any)("secondary")}
                 onClick={() => setShowCodeModal(null)}
               >
                 취소
               </button>
-              <button style={styles.btn("primary")} onClick={confirmCode}>
+              <button style={(styles.btn as any)("primary")} onClick={confirmCode}>
                 확인
               </button>
             </div>
@@ -611,33 +693,29 @@ export default function App() {
         </div>
       )}
 
-      <main style={styles.main}>
-        {/* ── Alerts ── */}
-        {error && <div style={styles.alert("error")}>{error}</div>}
-        {successMsg && <div style={styles.alert("success")}>{successMsg}</div>}
+      <main style={styles.main as CSSProperties}>
+        {error && <div style={(styles.alert as any)("error")}>{error}</div>}
+        {successMsg && <div style={(styles.alert as any)("success")}>{successMsg}</div>}
 
-        {/* ── Filter ── */}
-        <div style={styles.card}>
-          <div style={styles.filterRow}>
+        <div style={styles.card as CSSProperties}>
+          <div style={styles.filterRow as CSSProperties}>
             <div>
-              <label style={styles.label}>날짜</label>
+              <label style={styles.label as CSSProperties}>날짜</label>
               <input
                 type="date"
                 value={selectedDate}
                 onChange={(e) => setSelectedDate(e.target.value)}
-                style={styles.input}
+                style={styles.input as CSSProperties}
               />
             </div>
             <div>
-              <label style={styles.label}>화장실</label>
+              <label style={styles.label as CSSProperties}>화장실</label>
               <select
                 value={selectedRestroomId}
                 onChange={(e) => setSelectedRestroomId(e.target.value)}
-                style={styles.select}
+                style={styles.select as CSSProperties}
               >
-                {restrooms.length === 0 && (
-                  <option value="">화장실 없음</option>
-                )}
+                {restrooms.length === 0 && <option value="">화장실 없음</option>}
                 {restrooms.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name}
@@ -651,11 +729,10 @@ export default function App() {
           </div>
         </div>
 
-        {/* ── Loading ── */}
         {loading && (
           <div
             style={{
-              ...styles.card,
+              ...(styles.card as CSSProperties),
               textAlign: "center",
               color: "#94a3b8",
               padding: 40,
@@ -665,9 +742,8 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Inspection View ── */}
         {!loading && template && (
-          <div style={styles.card}>
+          <div style={styles.card as CSSProperties}>
             <div
               style={{
                 display: "flex",
@@ -676,13 +752,27 @@ export default function App() {
                 marginBottom: 16,
               }}
             >
-              <p style={{ ...styles.cardTitle, marginBottom: 0 }}>
+              <p style={{ ...(styles.cardTitle as CSSProperties), marginBottom: 0 }}>
                 {selectedRestroom?.name} 위생점검표
               </p>
-              <span style={{ fontSize: 12, color: "#94a3b8" }}>
-                {template.name}
-              </span>
+              <span style={{ fontSize: 12, color: "#94a3b8" }}>{template.name}</span>
             </div>
+
+            {template.items.filter((i) => i.enabled).length === 0 && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: "12px 14px",
+                  borderRadius: 10,
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  color: "#64748b",
+                  fontSize: 13,
+                }}
+              >
+                아직 등록된 점검 항목이 없습니다. 관리자모드에서 화장실별 항목을 추가해주세요.
+              </div>
+            )}
 
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {template.slots.map((slot) => {
@@ -693,25 +783,26 @@ export default function App() {
                   memo: "",
                   checkedByRole: null,
                 };
+
                 const isDone = slotData.status === "DONE";
                 const enabledItems = template.items
                   .filter((i) => i.enabled)
                   .sort((a, b) => a.order - b.order);
 
                 return (
-                  <div key={slot.id} style={styles.slotSection}>
-                    <div style={styles.slotHeader}>
+                  <div key={slot.id} style={styles.slotSection as CSSProperties}>
+                    <div style={styles.slotHeader as CSSProperties}>
                       <span style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
                         {slot.label}
                       </span>
-                      <span style={styles.statusBadge(slotData.status)}>
+                      <span style={(styles.statusBadge as any)(slotData.status)}>
                         {isDone ? "✓ 점검 완료" : "미점검"}
                       </span>
                     </div>
-                    <div style={styles.slotBody}>
-                      {/* Inspector name */}
+
+                    <div style={styles.slotBody as CSSProperties}>
                       <div style={{ marginBottom: 14 }}>
-                        <label style={styles.label}>점검자명</label>
+                        <label style={styles.label as CSSProperties}>점검자명</label>
                         {canInput && !isDone ? (
                           <input
                             type="text"
@@ -726,7 +817,7 @@ export default function App() {
                               }))
                             }
                             placeholder="점검자명 입력"
-                            style={{ ...styles.input, width: 200 }}
+                            style={{ ...(styles.input as CSSProperties), width: 200 }}
                           />
                         ) : (
                           <span style={{ fontSize: 14, color: "#374151" }}>
@@ -735,25 +826,25 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Items */}
-                      <table style={styles.table}>
+                      <table style={styles.table as CSSProperties}>
                         <thead>
                           <tr>
-                            <th style={styles.th}>점검 항목</th>
-                            <th style={{ ...styles.th, width: 80 }}>결과</th>
+                            <th style={styles.th as CSSProperties}>점검 항목</th>
+                            <th style={{ ...(styles.th as CSSProperties), width: 80 }}>결과</th>
                           </tr>
                         </thead>
                         <tbody>
                           {enabledItems.map((item) => {
                             const ans = slotData.answers[item.id] ?? null;
+
                             return (
                               <tr key={item.id}>
-                                <td style={styles.td}>{item.label}</td>
-                                <td style={styles.td}>
+                                <td style={styles.td as CSSProperties}>{item.label}</td>
+                                <td style={styles.td as CSSProperties}>
                                   {canInput && !isDone ? (
                                     <div style={{ display: "flex", gap: 6 }}>
                                       <button
-                                        style={styles.oxBtn(ans === "O", "O")}
+                                        style={(styles.oxBtn as any)(ans === "O", "O")}
                                         onClick={() =>
                                           setDraftSlots((prev) => ({
                                             ...prev,
@@ -761,7 +852,7 @@ export default function App() {
                                               ...prev[slot.id],
                                               answers: {
                                                 ...prev[slot.id].answers,
-                                                [item.id]: ans === "O" ? undefined as any : "O",
+                                                [item.id]: ans === "O" ? undefined : "O",
                                               },
                                             },
                                           }))
@@ -770,7 +861,7 @@ export default function App() {
                                         O
                                       </button>
                                       <button
-                                        style={styles.oxBtn(ans === "X", "X")}
+                                        style={(styles.oxBtn as any)(ans === "X", "X")}
                                         onClick={() =>
                                           setDraftSlots((prev) => ({
                                             ...prev,
@@ -778,7 +869,7 @@ export default function App() {
                                               ...prev[slot.id],
                                               answers: {
                                                 ...prev[slot.id].answers,
-                                                [item.id]: ans === "X" ? undefined as any : "X",
+                                                [item.id]: ans === "X" ? undefined : "X",
                                               },
                                             },
                                           }))
@@ -788,7 +879,7 @@ export default function App() {
                                       </button>
                                     </div>
                                   ) : (
-                                    <span style={styles.oxBadge(ans as "O" | "X" | null)}>
+                                    <span style={(styles.oxBadge as any)(ans as "O" | "X" | null)}>
                                       {ans ?? "-"}
                                     </span>
                                   )}
@@ -799,10 +890,9 @@ export default function App() {
                         </tbody>
                       </table>
 
-                      {/* Memo */}
                       {canInput && !isDone && (
                         <div style={{ marginTop: 12 }}>
-                          <label style={styles.label}>메모 (선택)</label>
+                          <label style={styles.label as CSSProperties}>메모 (선택)</label>
                           <input
                             type="text"
                             value={slotData.memo}
@@ -816,21 +906,25 @@ export default function App() {
                               }))
                             }
                             placeholder="특이사항 입력"
-                            style={{ ...styles.input, width: "100%", boxSizing: "border-box" }}
+                            style={{
+                              ...(styles.input as CSSProperties),
+                              width: "100%",
+                              boxSizing: "border-box",
+                            }}
                           />
                         </div>
                       )}
+
                       {isDone && slotData.memo && (
                         <div style={{ marginTop: 10, fontSize: 13, color: "#64748b" }}>
                           메모: {slotData.memo}
                         </div>
                       )}
 
-                      {/* Save button */}
                       {canInput && !isDone && (
                         <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
                           <button
-                            style={styles.btn("success")}
+                            style={(styles.btn as any)("success")}
                             onClick={() => handleSaveSlot(slot.id)}
                           >
                             저장
@@ -858,158 +952,223 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Admin: Template Management ── */}
-        {isAdmin && templateDraft && (
-          <div style={styles.card}>
-            <p style={styles.cardTitle}>📋 점검표 항목 관리</p>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>ID</th>
-                  <th style={styles.th}>항목명</th>
-                  <th style={{ ...styles.th, width: 60 }}>순서</th>
-                  <th style={{ ...styles.th, width: 70 }}>사용</th>
-                  <th style={{ ...styles.th, width: 60 }}>삭제</th>
-                </tr>
-              </thead>
-              <tbody>
-                {templateDraft.items
-                  .sort((a, b) => a.order - b.order)
-                  .map((item, idx) => (
-                    <tr key={item.id}>
-                      <td style={styles.td}>
-                        <input
-                          type="text"
-                          value={item.id}
-                          onChange={(e) =>
-                            setTemplateDraft((prev) => {
-                              if (!prev) return prev;
-                              const items = [...prev.items];
-                              items[idx] = { ...item, id: e.target.value };
-                              return { ...prev, items };
-                            })
-                          }
-                          style={{ ...styles.input, width: 90, padding: "4px 8px" }}
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <input
-                          type="text"
-                          value={item.label}
-                          onChange={(e) =>
-                            setTemplateDraft((prev) => {
-                              if (!prev) return prev;
-                              const items = [...prev.items];
-                              items[idx] = { ...item, label: e.target.value };
-                              return { ...prev, items };
-                            })
-                          }
-                          style={{ ...styles.input, width: 160, padding: "4px 8px" }}
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <input
-                          type="number"
-                          value={item.order}
-                          onChange={(e) =>
-                            setTemplateDraft((prev) => {
-                              if (!prev) return prev;
-                              const items = [...prev.items];
-                              items[idx] = {
-                                ...item,
-                                order: parseInt(e.target.value) || 0,
-                              };
-                              return { ...prev, items };
-                            })
-                          }
-                          style={{ ...styles.input, width: 50, padding: "4px 8px" }}
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <input
-                          type="checkbox"
-                          checked={item.enabled}
-                          onChange={(e) =>
-                            setTemplateDraft((prev) => {
-                              if (!prev) return prev;
-                              const items = [...prev.items];
-                              items[idx] = { ...item, enabled: e.target.checked };
-                              return { ...prev, items };
-                            })
-                          }
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <button
-                          style={styles.btnSm("danger")}
-                          onClick={() =>
-                            setTemplateDraft((prev) => {
-                              if (!prev) return prev;
-                              return {
-                                ...prev,
-                                items: prev.items.filter((_, i) => i !== idx),
-                              };
-                            })
-                          }
-                        >
-                          삭제
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
+        {isAdmin && (
+          <div style={styles.card as CSSProperties}>
+            <p style={styles.cardTitle as CSSProperties}>📋 선택 화장실 점검 항목 관리</p>
+
             <div
-              style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}
+              style={{
+                marginBottom: 16,
+                padding: "12px 14px",
+                borderRadius: 10,
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                fontSize: 13,
+                color: "#475569",
+              }}
             >
-              <button
-                style={styles.btn("secondary")}
-                onClick={() =>
-                  setTemplateDraft((prev) => {
-                    if (!prev) return prev;
-                    const maxOrder =
-                      Math.max(0, ...prev.items.map((i) => i.order)) + 1;
-                    return {
-                      ...prev,
-                      items: [
-                        ...prev.items,
-                        {
-                          id: `item_${Date.now()}`,
-                          label: "새 항목",
-                          type: "OX",
-                          order: maxOrder,
-                          enabled: true,
-                        },
-                      ],
-                    };
-                  })
-                }
-              >
-                + 항목 추가
-              </button>
-              <button
-                style={styles.btn("primary")}
-                onClick={handleSaveTemplate}
-              >
-                점검표 저장
-              </button>
+              현재 편집 대상: <b>{restroomForm.name || "선택된 화장실 없음"}</b>
+              <br />
+              템플릿 ID: <b>{restroomForm.templateId || "-"}</b>
             </div>
+
+            {adminTemplateLoading ? (
+              <div style={{ color: "#94a3b8", fontSize: 14 }}>점검 항목 불러오는 중...</div>
+            ) : !adminTemplateDraft ? (
+              <div style={{ color: "#94a3b8", fontSize: 14 }}>
+                화장실을 먼저 선택해주세요.
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={styles.label as CSSProperties}>점검표 이름</label>
+                  <input
+                    type="text"
+                    value={adminTemplateDraft.name}
+                    onChange={(e) =>
+                      setAdminTemplateDraft((prev) =>
+                        prev ? { ...prev, name: e.target.value } : prev
+                      )
+                    }
+                    style={{
+                      ...(styles.input as CSSProperties),
+                      width: "100%",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+
+                <table style={styles.table as CSSProperties}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th as CSSProperties}>ID</th>
+                      <th style={styles.th as CSSProperties}>항목명</th>
+                      <th style={{ ...(styles.th as CSSProperties), width: 60 }}>순서</th>
+                      <th style={{ ...(styles.th as CSSProperties), width: 70 }}>사용</th>
+                      <th style={{ ...(styles.th as CSSProperties), width: 60 }}>삭제</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminTemplateDraft.items
+                      .slice()
+                      .sort((a, b) => a.order - b.order)
+                      .map((item) => {
+                        const realIndex = adminTemplateDraft.items.findIndex((x) => x.id === item.id);
+
+                        return (
+                          <tr key={item.id}>
+                            <td style={styles.td as CSSProperties}>
+                              <input
+                                type="text"
+                                value={item.id}
+                                onChange={(e) =>
+                                  setAdminTemplateDraft((prev) => {
+                                    if (!prev) return prev;
+                                    const items = [...prev.items];
+                                    items[realIndex] = { ...item, id: sanitizeId(e.target.value) };
+                                    return { ...prev, items };
+                                  })
+                                }
+                                style={{
+                                  ...(styles.input as CSSProperties),
+                                  width: 110,
+                                  padding: "4px 8px",
+                                }}
+                              />
+                            </td>
+                            <td style={styles.td as CSSProperties}>
+                              <input
+                                type="text"
+                                value={item.label}
+                                onChange={(e) =>
+                                  setAdminTemplateDraft((prev) => {
+                                    if (!prev) return prev;
+                                    const items = [...prev.items];
+                                    items[realIndex] = { ...item, label: e.target.value };
+                                    return { ...prev, items };
+                                  })
+                                }
+                                style={{
+                                  ...(styles.input as CSSProperties),
+                                  width: 180,
+                                  padding: "4px 8px",
+                                }}
+                              />
+                            </td>
+                            <td style={styles.td as CSSProperties}>
+                              <input
+                                type="number"
+                                value={item.order}
+                                onChange={(e) =>
+                                  setAdminTemplateDraft((prev) => {
+                                    if (!prev) return prev;
+                                    const items = [...prev.items];
+                                    items[realIndex] = {
+                                      ...item,
+                                      order: parseInt(e.target.value) || 0,
+                                    };
+                                    return { ...prev, items };
+                                  })
+                                }
+                                style={{
+                                  ...(styles.input as CSSProperties),
+                                  width: 55,
+                                  padding: "4px 8px",
+                                }}
+                              />
+                            </td>
+                            <td style={styles.td as CSSProperties}>
+                              <input
+                                type="checkbox"
+                                checked={item.enabled}
+                                onChange={(e) =>
+                                  setAdminTemplateDraft((prev) => {
+                                    if (!prev) return prev;
+                                    const items = [...prev.items];
+                                    items[realIndex] = { ...item, enabled: e.target.checked };
+                                    return { ...prev, items };
+                                  })
+                                }
+                              />
+                            </td>
+                            <td style={styles.td as CSSProperties}>
+                              <button
+                                style={(styles.btnSm as any)("danger")}
+                                onClick={() =>
+                                  setAdminTemplateDraft((prev) => {
+                                    if (!prev) return prev;
+                                    return {
+                                      ...prev,
+                                      items: prev.items.filter((x) => x.id !== item.id),
+                                    };
+                                  })
+                                }
+                              >
+                                삭제
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    marginTop: 16,
+                    justifyContent: "flex-end",
+                  }}
+                >
+                  <button
+                    style={(styles.btn as any)("secondary")}
+                    onClick={() =>
+                      setAdminTemplateDraft((prev) => {
+                        if (!prev) return prev;
+                        const maxOrder = Math.max(0, ...prev.items.map((i) => i.order)) + 1;
+                        return {
+                          ...prev,
+                          items: [
+                            ...prev.items,
+                            {
+                              id: `item_${Date.now()}`,
+                              label: "새 항목",
+                              type: "OX",
+                              order: maxOrder,
+                              enabled: true,
+                            } as TemplateItem,
+                          ],
+                        };
+                      })
+                    }
+                  >
+                    + 항목 추가
+                  </button>
+
+                  <button
+                    style={(styles.btn as any)("primary")}
+                    onClick={handleSaveTemplate}
+                  >
+                    점검 항목 저장
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
 
-        {/* ── Admin: Restroom Management ── */}
         {isAdmin && (
-          <div style={styles.card}>
-            <p style={styles.cardTitle}>🚽 화장실 관리</p>
+          <div style={styles.card as CSSProperties}>
+            <p style={styles.cardTitle as CSSProperties}>🚽 화장실 관리</p>
 
-            {/* Restroom list */}
             <div style={{ marginBottom: 16 }}>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {adminAllRestrooms.map((r) => (
                   <button
                     key={r.id}
                     style={{
-                      ...styles.btnSm(
+                      ...(styles.btnSm as any)(
                         restroomForm.id === r.id && !editingNewRestroom
                           ? "primary"
                           : "secondary"
@@ -1023,8 +1182,9 @@ export default function App() {
                     {r.name}
                   </button>
                 ))}
+
                 <button
-                  style={styles.btnSm(editingNewRestroom ? "primary" : "ghost")}
+                  style={(styles.btnSm as any)(editingNewRestroom ? "primary" : "ghost")}
                   onClick={() => {
                     setEditingNewRestroom(true);
                     setRestroomForm({
@@ -1033,9 +1193,10 @@ export default function App() {
                       code: "",
                       locationLabel: "",
                       enabled: true,
-                      templateId: "default_template",
+                      templateId: `template_${Date.now()}`,
                       sortOrder: 0,
                     });
+                    setAdminTemplateDraft(createEmptyTemplate(`template_${Date.now()}`));
                   }}
                 >
                   + 새 화장실
@@ -1043,9 +1204,8 @@ export default function App() {
               </div>
             </div>
 
-            <div style={styles.divider} />
+            <div style={styles.divider as CSSProperties} />
 
-            {/* Restroom form */}
             <div
               style={{
                 display: "grid",
@@ -1053,8 +1213,8 @@ export default function App() {
                 gap: "0 24px",
               }}
             >
-              <div style={styles.formGroup}>
-                <label style={styles.label}>화장실 ID</label>
+              <div style={styles.formGroup as CSSProperties}>
+                <label style={styles.label as CSSProperties}>화장실 ID</label>
                 <input
                   type="text"
                   value={restroomForm.id}
@@ -1067,7 +1227,7 @@ export default function App() {
                   }
                   placeholder="예: restroom_10f_m"
                   style={{
-                    ...styles.input,
+                    ...(styles.input as CSSProperties),
                     width: "100%",
                     boxSizing: "border-box",
                     background: !editingNewRestroom ? "#f8fafc" : "#fff",
@@ -1079,8 +1239,9 @@ export default function App() {
                   </span>
                 )}
               </div>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>이름</label>
+
+              <div style={styles.formGroup as CSSProperties}>
+                <label style={styles.label as CSSProperties}>이름</label>
                 <input
                   type="text"
                   value={restroomForm.name}
@@ -1089,14 +1250,15 @@ export default function App() {
                   }
                   placeholder="예: 10층 남자화장실"
                   style={{
-                    ...styles.input,
+                    ...(styles.input as CSSProperties),
                     width: "100%",
                     boxSizing: "border-box",
                   }}
                 />
               </div>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>코드</label>
+
+              <div style={styles.formGroup as CSSProperties}>
+                <label style={styles.label as CSSProperties}>코드</label>
                 <input
                   type="text"
                   value={restroomForm.code}
@@ -1105,14 +1267,15 @@ export default function App() {
                   }
                   placeholder="예: 10F-M"
                   style={{
-                    ...styles.input,
+                    ...(styles.input as CSSProperties),
                     width: "100%",
                     boxSizing: "border-box",
                   }}
                 />
               </div>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>위치</label>
+
+              <div style={styles.formGroup as CSSProperties}>
+                <label style={styles.label as CSSProperties}>위치</label>
                 <input
                   type="text"
                   value={restroomForm.locationLabel}
@@ -1124,14 +1287,15 @@ export default function App() {
                   }
                   placeholder="예: 10F"
                   style={{
-                    ...styles.input,
+                    ...(styles.input as CSSProperties),
                     width: "100%",
                     boxSizing: "border-box",
                   }}
                 />
               </div>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>정렬 순서</label>
+
+              <div style={styles.formGroup as CSSProperties}>
+                <label style={styles.label as CSSProperties}>정렬 순서</label>
                 <input
                   type="number"
                   value={restroomForm.sortOrder}
@@ -1142,32 +1306,42 @@ export default function App() {
                     }))
                   }
                   style={{
-                    ...styles.input,
+                    ...(styles.input as CSSProperties),
                     width: "100%",
                     boxSizing: "border-box",
                   }}
                 />
               </div>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>템플릿 ID</label>
+
+              <div style={styles.formGroup as CSSProperties}>
+                <label style={styles.label as CSSProperties}>템플릿 ID</label>
                 <input
                   type="text"
                   value={restroomForm.templateId}
                   onChange={(e) =>
                     setRestroomForm((p) => ({
                       ...p,
-                      templateId: e.target.value,
+                      templateId: sanitizeId(e.target.value),
                     }))
                   }
                   placeholder="default_template"
                   style={{
-                    ...styles.input,
+                    ...(styles.input as CSSProperties),
                     width: "100%",
                     boxSizing: "border-box",
                   }}
                 />
               </div>
-              <div style={{ ...styles.formGroup, gridColumn: "1/3", display: "flex", alignItems: "center", gap: 8 }}>
+
+              <div
+                style={{
+                  ...(styles.formGroup as CSSProperties),
+                  gridColumn: "1/3",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
                 <input
                   type="checkbox"
                   id="restroomEnabled"
@@ -1195,24 +1369,23 @@ export default function App() {
             >
               {!editingNewRestroom && restroomForm.id && (
                 <button
-                  style={styles.btn("danger")}
+                  style={(styles.btn as any)("danger")}
                   onClick={handleDeleteRestroom}
                 >
                   삭제
                 </button>
               )}
-              <button style={styles.btn("primary")} onClick={handleSaveRestroom}>
+              <button style={(styles.btn as any)("primary")} onClick={handleSaveRestroom}>
                 저장
               </button>
             </div>
           </div>
         )}
 
-        {/* ── Empty state ── */}
         {!loading && !template && !error && (
           <div
             style={{
-              ...styles.card,
+              ...(styles.card as CSSProperties),
               textAlign: "center",
               padding: 48,
               color: "#94a3b8",
